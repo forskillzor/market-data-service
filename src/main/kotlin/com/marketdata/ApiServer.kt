@@ -37,6 +37,28 @@ data class AggregateResponse(
     val priceLevelsJson: String? = null
 )
 
+@Serializable
+data class FootprintLevel(
+    val price: String,
+    val bidVolume: String,
+    val askVolume: String,
+    val bidCount: Int,
+    val askCount: Int
+)
+
+@Serializable
+data class FootprintResponse(
+    val exchange: String,
+    val symbol: String,
+    val timeframe: String,
+    val startTime: Long,
+    val endTime: Long,
+    val totalTicks: Long,
+    val minPrice: String,
+    val maxPrice: String,
+    val levels: List<FootprintLevel>
+)
+
 class ApiServer(
     private val port: Int,
     private val host: String,
@@ -110,6 +132,26 @@ class ApiServer(
                     }
                     val tfs = dao.getTimeframes(exchange, symbol)
                     call.respondText(json.encodeToString(tfs), ContentType.Application.Json)
+                }
+
+                get("/api/footprint") {
+                    val exchange = call.request.queryParameters["exchange"] ?: ""
+                    val symbol = call.request.queryParameters["symbol"] ?: ""
+                    val timeframe = call.request.queryParameters["timeframe"] ?: ""
+                    val from = call.request.queryParameters["from"]?.toLongOrNull()
+                    val to = call.request.queryParameters["to"]?.toLongOrNull()
+                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 500
+
+                    if (exchange.isBlank() || symbol.isBlank() || timeframe.isBlank()) {
+                        call.respondText(json.encodeToString(mapOf(
+                            "error" to "exchange, symbol, timeframe are required"
+                        )), ContentType.Application.Json)
+                        return@get
+                    }
+
+                    val query = AggregatesQuery(exchange, symbol, timeframe, from, to, limit)
+                    val footprint = dao.queryFootprint(query)
+                    call.respondText(json.encodeToString(footprint), ContentType.Application.Json)
                 }
             }
         }

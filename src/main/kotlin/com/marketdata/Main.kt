@@ -10,7 +10,7 @@ fun main() {
     val dbName = System.getenv("DB_NAME") ?: "trade_collector"
     val dbUser = System.getenv("DB_USER") ?: "trade_user"
     val dbPass = System.getenv("DB_PASSWORD") ?: "dev_password"
-    val httpPort = System.getenv("HTTP_PORT")?.toIntOrNull() ?: 8081
+    val httpPort = System.getenv("HTTP_PORT")?.toIntOrNull() ?: 8085
     val httpHost = System.getenv("HTTP_HOST") ?: "0.0.0.0"
 
     log.info { "Connecting to PostgreSQL at $dbHost:$dbPort/$dbName" }
