@@ -16,6 +16,14 @@ private val log = KotlinLogging.logger {}
 private val json = Json { prettyPrint = true; encodeDefaults = true }
 
 @Serializable
+data class InstrumentSummary(
+    val symbol: String,
+    val start: Long,
+    val end: Long,
+    val candles: Long
+)
+
+@Serializable
 data class AggregateResponse(
     val exchange: String,
     val symbol: String,
@@ -79,6 +87,12 @@ class ApiServer(
                         )
                     }
                     call.respondText(json.encodeToString(aggregates), ContentType.Application.Json)
+                }
+
+                get("/api/instruments") {
+                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                    val summary = dao.getInstrumentsSummary(exchange)
+                    call.respondText(json.encodeToString(summary), ContentType.Application.Json)
                 }
 
                 get("/api/symbols") {

@@ -2,7 +2,6 @@ package com.marketdata
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
-import kotlinx.serialization.Serializable
 import mu.KotlinLogging
 
 private val log = KotlinLogging.logger {}
@@ -95,6 +94,34 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
                     while (rs.next()) tfs.add(rs.getString("timeframe"))
                     tfs
                 }
+        }
+    }
+
+    fun getInstrumentsSummary(exchange: String): List<InstrumentSummary> {
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement("""
+                SELECT symbol,
+                       MIN(start_time) as data_start,
+                       MAX(end_time) as data_end,
+                       COUNT(*) as candle_count
+                FROM aggregates
+                WHERE exchange = ?
+                GROUP BY symbol
+                ORDER BY symbol
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, exchange)
+                val rs = stmt.executeQuery()
+                val results = mutableListOf<InstrumentSummary>()
+                while (rs.next()) {
+                    results.add(InstrumentSummary(
+                        symbol = rs.getString("symbol"),
+                        start = rs.getLong("data_start"),
+                        end = rs.getLong("data_end"),
+                        candles = rs.getLong("candle_count")
+                    ))
+                }
+                results
+            }
         }
     }
 
