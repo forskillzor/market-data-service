@@ -140,7 +140,7 @@ class ApiServer(
                     val timeframe = call.request.queryParameters["timeframe"] ?: ""
                     val from = call.request.queryParameters["from"]?.toLongOrNull()
                     val to = call.request.queryParameters["to"]?.toLongOrNull()
-                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 500
+                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 60
 
                     if (exchange.isBlank() || symbol.isBlank() || timeframe.isBlank()) {
                         call.respondText(json.encodeToString(mapOf(
@@ -150,8 +150,26 @@ class ApiServer(
                     }
 
                     val query = AggregatesQuery(exchange, symbol, timeframe, from, to, limit)
-                    val footprint = dao.queryFootprint(query)
+                    val footprint = dao.queryFootprint(query, maxLevels = 200)
                     call.respondText(json.encodeToString(footprint), ContentType.Application.Json)
+                }
+
+                get("/api/footprint/{symbol}/levels") {
+                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                    val symbol = call.parameters["symbol"] ?: ""
+                    val timeframe = call.request.queryParameters["timeframe"] ?: "1m"
+                    val startTime = call.request.queryParameters["startTime"]?.toLongOrNull()
+                    val endTime = call.request.queryParameters["endTime"]?.toLongOrNull()
+
+                    if (symbol.isBlank() || startTime == null || endTime == null) {
+                        call.respondText(json.encodeToString(mapOf(
+                            "error" to "symbol, startTime, endTime are required"
+                        )), ContentType.Application.Json)
+                        return@get
+                    }
+
+                    val levels = dao.queryFootprintLevels(exchange, symbol, timeframe, startTime, endTime)
+                    call.respondText(json.encodeToString(levels), ContentType.Application.Json)
                 }
             }
         }

@@ -9,12 +9,12 @@ build:
 	./gradlew shadowJar --no-daemon
 
 run:
-	DB_HOST=localhost DB_PORT=5432 DB_NAME=trade_collector DB_USER=trade_user DB_PASSWORD=dev_password HTTP_HOST=0.0.0.0 HTTP_PORT=8085 java -jar build/libs/market-data-server.jar
+	DB_HOST=localhost DB_PORT=5432 DB_NAME=trade_collector DB_USER=trade_user DB_PASSWORD=dev_password HTTP_HOST=0.0.0.0 HTTP_PORT=8085 java -Xmx512m -jar build/libs/market-data-server.jar
 
 package: build
 	mkdir -p deploy-package
 	cp build/libs/market-data-server.jar deploy-package/
-	printf '#!/bin/bash\nDB_HOST=$${DB_HOST:-localhost}\nDB_PORT=$${DB_PORT:-5432}\nDB_NAME=$${DB_NAME:-trade_collector}\nDB_USER=$${DB_USER:-trade_user}\nDB_PASSWORD=$${DB_PASSWORD:-dev_password}\nHTTP_HOST=$${HTTP_HOST:-0.0.0.0}\nHTTP_PORT=$${HTTP_PORT:-8085}\ncd /opt/market-data-server/current\nexec java -jar market-data-server.jar\n' > deploy-package/run.sh
+	printf '#!/bin/bash\nDB_HOST=$${DB_HOST:-localhost}\nDB_PORT=$${DB_PORT:-5432}\nDB_NAME=$${DB_NAME:-trade_collector}\nDB_USER=$${DB_USER:-trade_user}\nDB_PASSWORD=$${DB_PASSWORD:-dev_password}\nHTTP_HOST=$${HTTP_HOST:-0.0.0.0}\nHTTP_PORT=$${HTTP_PORT:-8085}\ncd /opt/market-data-server/current\nexec java -Xmx512m -jar market-data-server.jar\n' > deploy-package/run.sh
 	chmod +x deploy-package/run.sh
 	printf '[Unit]\nDescription=Market Data Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=deploy\nGroup=deploy\nWorkingDirectory=/opt/market-data-server/current\nEnvironmentFile=/etc/default/market-data-server\nExecStart=/opt/market-data-server/current/run.sh\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\n' > deploy-package/market-data-server.service
 	tar -czf market-data-server-$(VERSION).tar.gz -C deploy-package .
