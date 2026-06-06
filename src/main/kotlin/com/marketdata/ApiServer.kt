@@ -140,7 +140,7 @@ class ApiServer(
                     val timeframe = call.request.queryParameters["timeframe"] ?: ""
                     val from = call.request.queryParameters["from"]?.toLongOrNull()
                     val to = call.request.queryParameters["to"]?.toLongOrNull()
-                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 60
+                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
 
                     if (exchange.isBlank() || symbol.isBlank() || timeframe.isBlank()) {
                         call.respondText(json.encodeToString(mapOf(
@@ -150,7 +150,7 @@ class ApiServer(
                     }
 
                     val query = AggregatesQuery(exchange, symbol, timeframe, from, to, limit)
-                    val footprint = dao.queryFootprint(query, maxLevels = 200)
+                    val footprint = dao.queryFootprint(query)
                     call.respondText(json.encodeToString(footprint), ContentType.Application.Json)
                 }
 

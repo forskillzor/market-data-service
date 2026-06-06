@@ -168,7 +168,7 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
         return results
     }
 
-    fun queryFootprint(q: AggregatesQuery, maxLevels: Int = 200): List<FootprintResponse> {
+    fun queryFootprint(q: AggregatesQuery): List<FootprintResponse> {
         val tbl = tableName(q.symbol)
         val sql = buildString {
             append("""
@@ -196,12 +196,7 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
                 val rs = stmt.executeQuery()
                 val results = mutableListOf<FootprintResponse>()
                 while (rs.next()) {
-                    val allLevels = parsePriceLevels(rs.getString("price_levels_json"))
-                    val levels = if (allLevels.size > maxLevels) {
-                        // Sample evenly: take every Nth level to fit maxLevels
-                        val step = allLevels.size.toDouble() / maxLevels
-                        (0 until maxLevels).map { i -> allLevels[(i * step).toInt()] }
-                    } else allLevels
+                    val levels = parsePriceLevels(rs.getString("price_levels_json"))
 
                     results.add(FootprintResponse(
                         exchange = rs.getString("exchange"),
