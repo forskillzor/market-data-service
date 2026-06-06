@@ -180,7 +180,7 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
             """.trimIndent())
             if (q.from != null) append(" AND start_time >= ?")
             if (q.to != null) append(" AND end_time <= ?")
-            append(" ORDER BY start_time ASC LIMIT ?")
+            append(" ORDER BY start_time DESC LIMIT ?")
         }
 
         return dataSource.connection.use { conn ->
