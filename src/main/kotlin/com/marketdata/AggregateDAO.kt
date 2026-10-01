@@ -239,6 +239,73 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
         }
     }
 
+    fun queryLiquidationAggregates(
+        exchange: String, symbol: String, timeframe: String = "1m",
+        from: Long? = null, limit: Int = 100
+    ): List<LiquidationAggregateData> {
+        val tbl = "liquidation_aggregates_${symbol.lowercase()}"
+        val sql = buildString {
+            append("SELECT * FROM $tbl WHERE 1=1")
+            if (from != null) append(" AND start_time >= ?")
+            append(" ORDER BY start_time DESC LIMIT ?")
+        }
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { stmt ->
+                var idx = 1
+                if (from != null) stmt.setLong(idx++, from)
+                stmt.setInt(idx, limit)
+                val rs = stmt.executeQuery()
+                val results = mutableListOf<LiquidationAggregateData>()
+                while (rs.next()) {
+                    results.add(LiquidationAggregateData(
+                        exchange = exchange, symbol = symbol, timeframe = timeframe,
+                        startTime = rs.getLong("start_time"),
+                        endTime = rs.getLong("end_time"),
+                        longCount = rs.getInt("long_count"),
+                        longVolume = rs.getBigDecimal("long_volume")?.toPlainString() ?: "0",
+                        shortCount = rs.getInt("short_count"),
+                        shortVolume = rs.getBigDecimal("short_volume")?.toPlainString() ?: "0"
+                    ))
+                }
+                results
+            }
+        }
+    }
+
+    fun queryLiquidations(
+        exchange: String, symbol: String,
+        from: Long? = null, to: Long? = null, limit: Int = 100
+    ): List<LiquidationData> {
+        val tbl = "liquidations_${symbol.lowercase()}"
+        val sql = buildString {
+            append("SELECT * FROM $tbl WHERE 1=1")
+            if (from != null) append(" AND timestamp >= ?")
+            if (to != null) append(" AND timestamp <= ?")
+            append(" ORDER BY timestamp DESC LIMIT ?")
+        }
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { stmt ->
+                var idx = 1
+                if (from != null) stmt.setLong(idx++, from)
+                if (to != null) stmt.setLong(idx++, to)
+                stmt.setInt(idx, limit)
+                val rs = stmt.executeQuery()
+                val results = mutableListOf<LiquidationData>()
+                while (rs.next()) {
+                    results.add(LiquidationData(
+                        exchange = exchange, symbol = symbol,
+                        timestamp = rs.getLong("timestamp"),
+                        price = rs.getBigDecimal("price")?.toPlainString() ?: "0",
+                        quantity = rs.getBigDecimal("quantity")?.toPlainString() ?: "0",
+                        isLong = rs.getBoolean("is_long"),
+                        orderType = rs.getString("order_type") ?: ""
+                    ))
+                }
+                results
+            }
+        }
+    }
+
     private fun parsePriceLevels(jsonText: String?): List<FootprintLevel> {
         if (jsonText.isNullOrBlank()) return emptyList()
         return try {

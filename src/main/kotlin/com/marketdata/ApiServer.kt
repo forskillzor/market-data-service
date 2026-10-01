@@ -59,6 +59,30 @@ data class FootprintResponse(
     val levels: List<FootprintLevel>
 )
 
+@Serializable
+data class LiquidationData(
+    val exchange: String,
+    val symbol: String,
+    val timestamp: Long,
+    val price: String,
+    val quantity: String,
+    val isLong: Boolean,
+    val orderType: String
+)
+
+@Serializable
+data class LiquidationAggregateData(
+    val exchange: String,
+    val symbol: String,
+    val timeframe: String,
+    val startTime: Long,
+    val endTime: Long,
+    val longCount: Int,
+    val longVolume: String,
+    val shortCount: Int,
+    val shortVolume: String
+)
+
 class ApiServer(
     private val port: Int,
     private val host: String,
@@ -67,7 +91,7 @@ class ApiServer(
     private var server: EmbeddedServer<JettyApplicationEngine, JettyApplicationEngineBase.Configuration>? = null
 
     fun start() {
-        server = embeddedServer(Jetty, port = port, host = host) {
+        server = embeddedServer(CIO, port = port, host = host) {
             install(CORS) { anyHost() }
 
             routing {
@@ -152,6 +176,36 @@ class ApiServer(
                     val query = AggregatesQuery(exchange, symbol, timeframe, from, to, limit)
                     val footprint = dao.queryFootprint(query)
                     call.respondText(json.encodeToString(footprint), ContentType.Application.Json)
+                }
+
+                get("/api/liquidation-aggregates") {
+                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                    val symbol = call.request.queryParameters["symbol"] ?: ""
+                    val timeframe = call.request.queryParameters["timeframe"] ?: "1m"
+                    val from = call.request.queryParameters["from"]?.toLongOrNull()
+                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
+
+                    if (symbol.isBlank()) {
+                        call.respondText(json.encodeToString(mapOf("error" to "symbol required")), ContentType.Application.Json)
+                        return@get
+                    }
+                    val data = dao.queryLiquidationAggregates(exchange, symbol.uppercase(), timeframe, from, limit)
+                    call.respondText(json.encodeToString(data), ContentType.Application.Json)
+                }
+
+                get("/api/liquidations") {
+                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                    val symbol = call.request.queryParameters["symbol"] ?: ""
+                    val from = call.request.queryParameters["from"]?.toLongOrNull()
+                    val to = call.request.queryParameters["to"]?.toLongOrNull()
+                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
+
+                    if (symbol.isBlank()) {
+                        call.respondText(json.encodeToString(mapOf("error" to "symbol required")), ContentType.Application.Json)
+                        return@get
+                    }
+                    val data = dao.queryLiquidations(exchange, symbol.uppercase(), from, to, limit)
+                    call.respondText(json.encodeToString(data), ContentType.Application.Json)
                 }
 
                 get("/api/footprint/{symbol}/levels") {

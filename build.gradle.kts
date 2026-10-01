@@ -29,7 +29,7 @@ dependencies {
     val ktor_version = "3.2.0"
 
     implementation("io.ktor:ktor-server-core:$ktor_version")
-    implementation("io.ktor:ktor-server-jetty:$ktor_version")
+    implementation("io.ktor:ktor-server-cio:${ktor_version}")
     implementation("io.ktor:ktor-server-content-negotiation:$ktor_version")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktor_version")
     implementation("io.ktor:ktor-server-cors:$ktor_version")

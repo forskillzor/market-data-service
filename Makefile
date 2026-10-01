@@ -1,5 +1,7 @@
 .PHONY: build run package deploy
 
+-include Makefile.local
+
 VERSION ?= $(shell date +%Y%m%d-%H%M%S)
 VPS_HOST ?=
 VPS_USER ?=
