@@ -5,14 +5,18 @@ import io.ktor.server.application.*
 import io.ktor.server.cio.*
 import io.ktor.server.engine.*
 import io.ktor.server.plugins.cors.routing.*
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import mu.KotlinLogging
 
 private val log = KotlinLogging.logger {}
 private val json = Json { prettyPrint = true; encodeDefaults = true }
+private const val MAX_LIMIT = 10_000
+private val SYMBOL_REGEX = Regex("^[A-Za-z0-9_]+$")
 
 @Serializable
 data class InstrumentSummary(
@@ -82,6 +86,35 @@ data class LiquidationAggregateData(
     val shortVolume: String
 )
 
+@Serializable
+data class BatchFootprintQuery(
+    val timeframe: String,
+    val start: Long? = null,
+    val end: Long? = null,
+    val limit: Int = 20,
+    val order: String = "desc"
+)
+
+@Serializable
+data class BatchFootprintRequest(
+    val exchange: String,
+    val symbol: String,
+    val queries: List<BatchFootprintQuery>
+)
+
+@Serializable
+data class BatchFootprintResult(
+    val timeframe: String,
+    val candles: List<FootprintResponse>
+)
+
+@Serializable
+data class BatchFootprintResponse(
+    val exchange: String,
+    val symbol: String,
+    val results: List<BatchFootprintResult>
+)
+
 class ApiServer(
     private val port: Int,
     private val host: String,
@@ -102,127 +135,242 @@ class ApiServer(
                 }
 
                 get("/api/aggregates") {
-                    val exchange = call.request.queryParameters["exchange"] ?: ""
-                    val symbol = call.request.queryParameters["symbol"] ?: ""
-                    val timeframe = call.request.queryParameters["timeframe"] ?: ""
-                    val from = call.request.queryParameters["from"]?.toLongOrNull()
-                    val to = call.request.queryParameters["to"]?.toLongOrNull()
-                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 1000
-
-                    if (exchange.isBlank() || symbol.isBlank() || timeframe.isBlank()) {
-                        call.respondText(json.encodeToString(mapOf(
-                            "error" to "exchange, symbol, timeframe are required"
-                        )), ContentType.Application.Json)
-                        return@get
-                    }
-
-                    val query = AggregatesQuery(exchange, symbol, timeframe, from, to, limit)
-                    val aggregates = dao.queryAggregates(query).map { row ->
-                        AggregateResponse(
-                            exchange = row["exchange"] as String,
-                            symbol = row["symbol"] as String,
-                            timeframe = row["timeframe"] as String,
-                            startTime = row["startTime"] as Long,
-                            endTime = row["endTime"] as Long,
-                            totalTicks = row["totalTicks"] as Long,
-                            minPrice = row["minPrice"]?.toString() ?: "0",
-                            maxPrice = row["maxPrice"]?.toString() ?: "0",
-                            priceLevels = row["priceLevels"] as Int,
-                            priceLevelsJson = row["priceLevelsJson"] as? String
+                    call.handle {
+                        val exchange = requireParam(call.request.queryParameters["exchange"], "exchange")
+                        val symbol = requireSymbol(
+                            requireParam(call.request.queryParameters["symbol"], "symbol")
                         )
+                        val queryTimeframes = resolveTimeframes(
+                            call.request.queryParameters["timeframe"],
+                            call.request.queryParameters["timeframes"]
+                        )
+                        val window = resolveWindow(call)
+                        val limit = resolveLimit(call.request.queryParameters["limit"], 1000)
+                        val order = resolveOrder(call.request.queryParameters["order"], "asc")
+
+                        val aggregates = queryTimeframes.flatMap { timeframe ->
+                            dao.queryAggregates(
+                                AggregatesQuery(
+                                    exchange = exchange,
+                                    symbol = symbol,
+                                    timeframe = timeframe,
+                                    from = window.start,
+                                    to = window.end,
+                                    limit = limit,
+                                    order = order
+                                )
+                            ).map { row ->
+                                AggregateResponse(
+                                    exchange = row["exchange"] as String,
+                                    symbol = row["symbol"] as String,
+                                    timeframe = row["timeframe"] as String,
+                                    startTime = row["startTime"] as Long,
+                                    endTime = row["endTime"] as Long,
+                                    totalTicks = row["totalTicks"] as Long,
+                                    minPrice = row["minPrice"]?.toString() ?: "0",
+                                    maxPrice = row["maxPrice"]?.toString() ?: "0",
+                                    priceLevels = row["priceLevels"] as Int,
+                                    priceLevelsJson = row["priceLevelsJson"] as? String
+                                )
+                            }
+                        }
+                        call.respondJson(aggregates)
                     }
-                    call.respondText(json.encodeToString(aggregates), ContentType.Application.Json)
                 }
 
                 get("/api/instruments") {
-                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
-                    val summary = dao.getInstrumentsSummary(exchange)
-                    call.respondText(json.encodeToString(summary), ContentType.Application.Json)
+                    call.handle {
+                        val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                        call.respondJson(dao.getInstrumentsSummary(exchange))
+                    }
                 }
 
                 get("/api/symbols") {
-                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
-                    val symbols = dao.getSymbols(exchange)
-                    call.respondText(json.encodeToString(symbols), ContentType.Application.Json)
+                    call.handle {
+                        val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                        call.respondJson(dao.getSymbols(exchange))
+                    }
                 }
 
                 get("/api/timeframes") {
-                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
-                    val symbol = call.request.queryParameters["symbol"] ?: ""
-                    if (symbol.isBlank()) {
-                        call.respondText(json.encodeToString(mapOf("error" to "symbol required")), ContentType.Application.Json)
-                        return@get
+                    call.handle {
+                        val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                        val symbol = requireSymbol(
+                            requireParam(call.request.queryParameters["symbol"], "symbol")
+                        )
+                        call.respondJson(dao.getTimeframes(exchange, symbol))
                     }
-                    val tfs = dao.getTimeframes(exchange, symbol)
-                    call.respondText(json.encodeToString(tfs), ContentType.Application.Json)
                 }
 
                 get("/api/footprint") {
-                    val exchange = call.request.queryParameters["exchange"] ?: ""
-                    val symbol = call.request.queryParameters["symbol"] ?: ""
-                    val timeframe = call.request.queryParameters["timeframe"] ?: ""
-                    val from = call.request.queryParameters["from"]?.toLongOrNull()
-                    val to = call.request.queryParameters["to"]?.toLongOrNull()
-                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+                    call.handle {
+                        val exchange = requireParam(call.request.queryParameters["exchange"], "exchange")
+                        val symbol = requireSymbol(
+                            requireParam(call.request.queryParameters["symbol"], "symbol")
+                        )
+                        val queryTimeframes = resolveTimeframes(
+                            call.request.queryParameters["timeframe"],
+                            call.request.queryParameters["timeframes"]
+                        )
+                        val window = resolveWindow(call)
+                        val limit = resolveLimit(call.request.queryParameters["limit"], 20)
+                        val order = resolveOrder(call.request.queryParameters["order"], "desc")
 
-                    if (exchange.isBlank() || symbol.isBlank() || timeframe.isBlank()) {
-                        call.respondText(json.encodeToString(mapOf(
-                            "error" to "exchange, symbol, timeframe are required"
-                        )), ContentType.Application.Json)
-                        return@get
+                        val footprint = queryTimeframes.flatMap { timeframe ->
+                            dao.queryFootprint(
+                                AggregatesQuery(
+                                    exchange = exchange,
+                                    symbol = symbol,
+                                    timeframe = timeframe,
+                                    from = window.start,
+                                    to = window.end,
+                                    limit = limit,
+                                    order = order
+                                )
+                            )
+                        }
+                        call.respondJson(footprint)
                     }
+                }
 
-                    val query = AggregatesQuery(exchange, symbol, timeframe, from, to, limit)
-                    val footprint = dao.queryFootprint(query)
-                    call.respondText(json.encodeToString(footprint), ContentType.Application.Json)
+                post("/api/footprint/batch") {
+                    call.handle {
+                        val request = try {
+                            json.decodeFromString(
+                                BatchFootprintRequest.serializer(),
+                                call.receiveText()
+                            )
+                        } catch (e: Exception) {
+                            throw RequestException("invalid request body")
+                        }
+
+                        val exchange = requireParam(request.exchange, "exchange")
+                        val symbol = requireSymbol(requireParam(request.symbol, "symbol"))
+                        if (request.queries.isEmpty()) {
+                            throw RequestException("queries must not be empty")
+                        }
+
+                        var totalLimit = 0
+                        val results = request.queries.map { query ->
+                            val timeframe = query.timeframe.trim().lowercase()
+                            if (!Timeframes.isAllowed(timeframe)) {
+                                throw RequestException(
+                                    "unsupported timeframe '$timeframe'; supported: " +
+                                        Timeframes.ordered.joinToString()
+                                )
+                            }
+                            if (query.limit <= 0) {
+                                throw RequestException("limit must be positive")
+                            }
+                            val limit = query.limit.coerceAtMost(MAX_LIMIT)
+                            totalLimit += limit
+                            if (totalLimit > MAX_LIMIT) {
+                                throw RequestException("total batch limit exceeds $MAX_LIMIT")
+                            }
+                            if (query.start != null && query.end != null && query.start > query.end) {
+                                throw RequestException("start must be <= end")
+                            }
+
+                            BatchFootprintResult(
+                                timeframe = timeframe,
+                                candles = dao.queryFootprint(
+                                    AggregatesQuery(
+                                        exchange = exchange,
+                                        symbol = symbol,
+                                        timeframe = timeframe,
+                                        from = query.start,
+                                        to = query.end,
+                                        limit = limit,
+                                        order = resolveOrder(query.order, "desc")
+                                    )
+                                )
+                            )
+                        }
+
+                        call.respondJson(
+                            BatchFootprintResponse(
+                                exchange = exchange,
+                                symbol = symbol,
+                                results = results
+                            )
+                        )
+                    }
                 }
 
                 get("/api/liquidation-aggregates") {
-                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
-                    val symbol = call.request.queryParameters["symbol"] ?: ""
-                    val timeframe = call.request.queryParameters["timeframe"] ?: "1m"
-                    val from = call.request.queryParameters["from"]?.toLongOrNull()
-                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
-
-                    if (symbol.isBlank()) {
-                        call.respondText(json.encodeToString(mapOf("error" to "symbol required")), ContentType.Application.Json)
-                        return@get
+                    call.handle {
+                        val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                        val symbol = requireSymbol(
+                            requireParam(call.request.queryParameters["symbol"], "symbol")
+                        )
+                        val timeframe = call.request.queryParameters["timeframe"] ?: "1m"
+                        val from = parseLong(call.request.queryParameters["from"], "from")
+                        val limit = resolveLimit(call.request.queryParameters["limit"], 100)
+                        val data = dao.queryLiquidationAggregates(
+                            exchange,
+                            symbol.uppercase(),
+                            timeframe,
+                            from,
+                            limit
+                        )
+                        call.respondJson(data)
                     }
-                    val data = dao.queryLiquidationAggregates(exchange, symbol.uppercase(), timeframe, from, limit)
-                    call.respondText(json.encodeToString(data), ContentType.Application.Json)
                 }
 
                 get("/api/liquidations") {
-                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
-                    val symbol = call.request.queryParameters["symbol"] ?: ""
-                    val from = call.request.queryParameters["from"]?.toLongOrNull()
-                    val to = call.request.queryParameters["to"]?.toLongOrNull()
-                    val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
-
-                    if (symbol.isBlank()) {
-                        call.respondText(json.encodeToString(mapOf("error" to "symbol required")), ContentType.Application.Json)
-                        return@get
+                    call.handle {
+                        val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                        val symbol = requireSymbol(
+                            requireParam(call.request.queryParameters["symbol"], "symbol")
+                        )
+                        val from = parseLong(call.request.queryParameters["from"], "from")
+                        val to = parseLong(call.request.queryParameters["to"], "to")
+                        val limit = resolveLimit(call.request.queryParameters["limit"], 100)
+                        val data = dao.queryLiquidations(
+                            exchange,
+                            symbol.uppercase(),
+                            from,
+                            to,
+                            limit
+                        )
+                        call.respondJson(data)
                     }
-                    val data = dao.queryLiquidations(exchange, symbol.uppercase(), from, to, limit)
-                    call.respondText(json.encodeToString(data), ContentType.Application.Json)
                 }
 
                 get("/api/footprint/{symbol}/levels") {
-                    val exchange = call.request.queryParameters["exchange"] ?: "Binance"
-                    val symbol = call.parameters["symbol"] ?: ""
-                    val timeframe = call.request.queryParameters["timeframe"] ?: "1m"
-                    val startTime = call.request.queryParameters["startTime"]?.toLongOrNull()
-                    val endTime = call.request.queryParameters["endTime"]?.toLongOrNull()
+                    call.handle {
+                        val exchange = call.request.queryParameters["exchange"] ?: "Binance"
+                        val symbol = requireSymbol(
+                            requireParam(call.parameters["symbol"], "symbol")
+                        )
+                        val timeframe = (call.request.queryParameters["timeframe"] ?: "1m")
+                            .trim()
+                            .lowercase()
+                        if (!Timeframes.isAllowed(timeframe)) {
+                            throw RequestException(
+                                "unsupported timeframe '$timeframe'; supported: " +
+                                    Timeframes.ordered.joinToString()
+                            )
+                        }
+                        val startTime = parseLong(
+                            requireParam(call.request.queryParameters["startTime"], "startTime"),
+                            "startTime"
+                        ) ?: throw RequestException("startTime is required")
+                        val endTime = parseLong(
+                            requireParam(call.request.queryParameters["endTime"], "endTime"),
+                            "endTime"
+                        ) ?: throw RequestException("endTime is required")
 
-                    if (symbol.isBlank() || startTime == null || endTime == null) {
-                        call.respondText(json.encodeToString(mapOf(
-                            "error" to "symbol, startTime, endTime are required"
-                        )), ContentType.Application.Json)
-                        return@get
+                        call.respondJson(
+                            dao.queryFootprintLevels(
+                                exchange,
+                                symbol,
+                                timeframe,
+                                startTime,
+                                endTime
+                            )
+                        )
                     }
-
-                    val levels = dao.queryFootprintLevels(exchange, symbol, timeframe, startTime, endTime)
-                    call.respondText(json.encodeToString(levels), ContentType.Application.Json)
                 }
             }
         }
@@ -234,4 +382,91 @@ class ApiServer(
         server?.stop(1000, 5000)
         server = null
     }
+}
+
+private class RequestException(message: String) : RuntimeException(message)
+
+private data class Window(val start: Long?, val end: Long?)
+
+private fun requireParam(value: String?, name: String): String {
+    if (value.isNullOrBlank()) throw RequestException("$name is required")
+    return value
+}
+
+private fun requireSymbol(symbol: String): String {
+    if (!SYMBOL_REGEX.matches(symbol)) throw RequestException("invalid symbol")
+    return symbol
+}
+
+private fun resolveTimeframes(timeframe: String?, timeframes: String?): List<String> {
+    val raw = timeframes?.takeIf { it.isNotBlank() }
+        ?: timeframe?.takeIf { it.isNotBlank() }
+        ?: throw RequestException("timeframe or timeframes is required")
+
+    if (raw.trim().equals(Timeframes.ALL, ignoreCase = true)) {
+        return Timeframes.ordered
+    }
+    return Timeframes.normalize(listOf(raw))
+        ?: throw RequestException(
+            "unsupported timeframe; supported: ${Timeframes.ordered.joinToString()}"
+        )
+}
+
+private fun resolveWindow(call: ApplicationCall): Window {
+    val start = parseLong(
+        call.request.queryParameters["start"] ?: call.request.queryParameters["from"],
+        "start"
+    )
+    val end = parseLong(
+        call.request.queryParameters["end"] ?: call.request.queryParameters["to"],
+        "end"
+    )
+    if (start != null && end != null && start > end) {
+        throw RequestException("start must be <= end")
+    }
+    return Window(start, end)
+}
+
+private fun resolveLimit(raw: String?, default: Int): Int {
+    if (raw == null) return default
+    val value = raw.toIntOrNull() ?: throw RequestException("limit must be an integer")
+    return value.coerceIn(1, MAX_LIMIT)
+}
+
+private fun resolveOrder(raw: String?, default: String): String {
+    val value = (raw ?: default).trim().lowercase()
+    if (value != "asc" && value != "desc") {
+        throw RequestException("order must be asc or desc")
+    }
+    return value
+}
+
+private fun parseLong(raw: String?, name: String): Long? {
+    if (raw == null) return null
+    return raw.toLongOrNull() ?: throw RequestException("$name must be an integer")
+}
+
+private suspend fun ApplicationCall.handle(block: suspend () -> Unit) {
+    try {
+        block()
+    } catch (e: RequestException) {
+        respondError(HttpStatusCode.BadRequest, e.message ?: "bad request")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log.error(e) { "Request failed" }
+        respondError(HttpStatusCode.InternalServerError, "internal error")
+    }
+}
+
+private suspend fun ApplicationCall.respondError(status: HttpStatusCode, message: String) {
+    respondText(
+        json.encodeToString(mapOf("error" to message)),
+        ContentType.Application.Json,
+        status
+    )
+}
+
+private suspend inline fun <reified T> ApplicationCall.respondJson(value: T) {
+    respondText(json.encodeToString(value), ContentType.Application.Json)
 }

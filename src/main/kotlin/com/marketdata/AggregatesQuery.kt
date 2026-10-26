@@ -6,5 +6,6 @@ data class AggregatesQuery(
     val timeframe: String,
     val from: Long? = null,
     val to: Long? = null,
-    val limit: Int = 1000
+    val limit: Int = 1000,
+    val order: String = "asc"
 )

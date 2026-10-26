@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import mu.KotlinLogging
+import java.sql.PreparedStatement
 import java.util.concurrent.ConcurrentHashMap
 
 private val log = KotlinLogging.logger {}
@@ -13,6 +14,8 @@ private val log = KotlinLogging.logger {}
 class AggregateDAO(private val dataSource: HikariDataSource) {
 
     companion object {
+        private const val MAX_LIMIT = 10_000
+
         fun createDataSource(host: String, port: Int, db: String, user: String, pass: String): HikariDataSource {
             val cfg = HikariConfig().apply {
                 jdbcUrl = "jdbc:postgresql://$host:$port/$db"
@@ -59,7 +62,7 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
 
     fun queryAggregates(q: AggregatesQuery): List<Map<String, Any?>> {
         val tbl = tableName(q.symbol)
-        val sql = buildString {
+        val base = buildString {
             append("""
                 SELECT exchange, symbol, timeframe, start_time, end_time,
                        total_ticks, min_price, max_price, price_levels,
@@ -67,20 +70,15 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
                 FROM $tbl
                 WHERE exchange = ? AND symbol = ? AND timeframe = ?
             """.trimIndent())
-            if (q.from != null) append(" AND start_time >= ?")
-            if (q.to != null) append(" AND end_time <= ?")
-            append(" ORDER BY start_time ASC LIMIT ?")
+            appendTimeFilters(q)
         }
+        val sql = pageSql(base, q)
+        val limit = q.limit.coerceIn(1, MAX_LIMIT)
 
         return dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { stmt ->
-                var idx = 1
-                stmt.setString(idx++, q.exchange)
-                stmt.setString(idx++, q.symbol)
-                stmt.setString(idx++, q.timeframe)
-                if (q.from != null) stmt.setLong(idx++, q.from)
-                if (q.to != null) stmt.setLong(idx++, q.to)
-                stmt.setInt(idx, q.limit)
+                var idx = bindFilters(stmt, q)
+                stmt.setInt(idx, limit)
 
                 val rs = stmt.executeQuery()
                 val results = mutableListOf<Map<String, Any?>>()
@@ -100,6 +98,33 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
                 }
                 results
             }
+        }
+    }
+
+    private fun StringBuilder.appendTimeFilters(q: AggregatesQuery) {
+        if (q.from != null) append(" AND start_time >= ?")
+        if (q.to != null) append(" AND end_time <= ?")
+    }
+
+    private fun bindFilters(stmt: PreparedStatement, q: AggregatesQuery): Int {
+        var idx = 1
+        stmt.setString(idx++, q.exchange)
+        stmt.setString(idx++, q.symbol)
+        stmt.setString(idx++, q.timeframe)
+        if (q.from != null) stmt.setLong(idx++, q.from)
+        if (q.to != null) stmt.setLong(idx++, q.to)
+        return idx
+    }
+
+    /**
+     * limit always means "latest N". For ASC output the latest page is selected
+     * in a subquery first, then sorted ascending for the client.
+     */
+    private fun pageSql(base: String, q: AggregatesQuery): String {
+        return if (q.order.equals("desc", true)) {
+            "$base ORDER BY start_time DESC LIMIT ?"
+        } else {
+            "SELECT * FROM ($base ORDER BY start_time DESC LIMIT ?) latest ORDER BY start_time ASC"
         }
     }
 
@@ -130,7 +155,7 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
                 val rs = stmt.executeQuery()
                 val tfs = mutableListOf<String>()
                 while (rs.next()) tfs.add(rs.getString("timeframe"))
-                tfs
+                Timeframes.sortAvailable(tfs)
             }
         }
     }
@@ -170,7 +195,7 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
 
     fun queryFootprint(q: AggregatesQuery): List<FootprintResponse> {
         val tbl = tableName(q.symbol)
-        val sql = buildString {
+        val base = buildString {
             append("""
                 SELECT exchange, symbol, timeframe, start_time, end_time,
                        total_ticks, min_price, max_price, price_levels,
@@ -178,20 +203,15 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
                 FROM $tbl
                 WHERE exchange = ? AND symbol = ? AND timeframe = ?
             """.trimIndent())
-            if (q.from != null) append(" AND start_time >= ?")
-            if (q.to != null) append(" AND end_time <= ?")
-            append(" ORDER BY start_time DESC LIMIT ?")
+            appendTimeFilters(q)
         }
+        val sql = pageSql(base, q)
+        val limit = q.limit.coerceIn(1, MAX_LIMIT)
 
         return dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { stmt ->
-                var idx = 1
-                stmt.setString(idx++, q.exchange)
-                stmt.setString(idx++, q.symbol)
-                stmt.setString(idx++, q.timeframe)
-                if (q.from != null) stmt.setLong(idx++, q.from)
-                if (q.to != null) stmt.setLong(idx++, q.to)
-                stmt.setInt(idx, q.limit)
+                var idx = bindFilters(stmt, q)
+                stmt.setInt(idx, limit)
 
                 val rs = stmt.executeQuery()
                 val results = mutableListOf<FootprintResponse>()
