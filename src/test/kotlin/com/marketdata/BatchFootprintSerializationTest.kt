@@ -10,8 +10,7 @@ class BatchFootprintSerializationTest {
 
     @Test
     fun `decodes mixed batch request with defaults`() {
-        val request = json.decodeFromString(
-            BatchFootprintRequest.serializer(),
+        val request = decodeBatchFootprintRequest(
             """
             {
               "exchange": "Binance",
@@ -33,6 +32,28 @@ class BatchFootprintSerializationTest {
         assertEquals(2000L, request.queries[0].end)
         assertEquals(10, request.queries[1].limit)
         assertEquals("asc", request.queries[1].order)
+    }
+
+    @Test
+    fun `server decoder ignores unknown fields`() {
+        val request = decodeBatchFootprintRequest(
+            """
+            {
+              "exchange": "Binance",
+              "symbol": "BTCUSDT",
+              "unknown": true,
+              "queries": [
+                {"timeframe": "1m", "limit": 2, "unexpected": "ignored"}
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertEquals("Binance", request.exchange)
+        assertEquals("BTCUSDT", request.symbol)
+        assertEquals(1, request.queries.size)
+        assertEquals("1m", request.queries.single().timeframe)
+        assertEquals(2, request.queries.single().limit)
     }
 
     @Test

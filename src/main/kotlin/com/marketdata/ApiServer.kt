@@ -14,7 +14,12 @@ import kotlinx.serialization.json.Json
 import mu.KotlinLogging
 
 private val log = KotlinLogging.logger {}
-private val json = Json { prettyPrint = true; encodeDefaults = true }
+private val json = Json {
+    prettyPrint = true
+    encodeDefaults = true
+    ignoreUnknownKeys = true
+    isLenient = true
+}
 private const val MAX_LIMIT = 10_000
 private val SYMBOL_REGEX = Regex("^[A-Za-z0-9_]+$")
 
@@ -114,6 +119,9 @@ data class BatchFootprintResponse(
     val symbol: String,
     val results: List<BatchFootprintResult>
 )
+
+internal fun decodeBatchFootprintRequest(body: String): BatchFootprintRequest =
+    json.decodeFromString(BatchFootprintRequest.serializer(), body)
 
 class ApiServer(
     private val port: Int,
@@ -233,69 +241,7 @@ class ApiServer(
                     }
                 }
 
-                post("/api/footprint/batch") {
-                    call.handle {
-                        val request = try {
-                            json.decodeFromString(
-                                BatchFootprintRequest.serializer(),
-                                call.receiveText()
-                            )
-                        } catch (e: Exception) {
-                            throw RequestException("invalid request body")
-                        }
-
-                        val exchange = requireParam(request.exchange, "exchange")
-                        val symbol = requireSymbol(requireParam(request.symbol, "symbol"))
-                        if (request.queries.isEmpty()) {
-                            throw RequestException("queries must not be empty")
-                        }
-
-                        var totalLimit = 0
-                        val results = request.queries.map { query ->
-                            val timeframe = query.timeframe.trim().lowercase()
-                            if (!Timeframes.isAllowed(timeframe)) {
-                                throw RequestException(
-                                    "unsupported timeframe '$timeframe'; supported: " +
-                                        Timeframes.ordered.joinToString()
-                                )
-                            }
-                            if (query.limit <= 0) {
-                                throw RequestException("limit must be positive")
-                            }
-                            val limit = query.limit.coerceAtMost(MAX_LIMIT)
-                            totalLimit += limit
-                            if (totalLimit > MAX_LIMIT) {
-                                throw RequestException("total batch limit exceeds $MAX_LIMIT")
-                            }
-                            if (query.start != null && query.end != null && query.start > query.end) {
-                                throw RequestException("start must be <= end")
-                            }
-
-                            BatchFootprintResult(
-                                timeframe = timeframe,
-                                candles = dao.queryFootprint(
-                                    AggregatesQuery(
-                                        exchange = exchange,
-                                        symbol = symbol,
-                                        timeframe = timeframe,
-                                        from = query.start,
-                                        to = query.end,
-                                        limit = limit,
-                                        order = resolveOrder(query.order, "desc")
-                                    )
-                                )
-                            )
-                        }
-
-                        call.respondJson(
-                            BatchFootprintResponse(
-                                exchange = exchange,
-                                symbol = symbol,
-                                results = results
-                            )
-                        )
-                    }
-                }
+                batchFootprintRoute(dao::queryFootprint)
 
                 get("/api/liquidation-aggregates") {
                     call.handle {
@@ -381,6 +327,85 @@ class ApiServer(
     fun stop() {
         server?.stop(1000, 5000)
         server = null
+    }
+}
+
+internal fun Route.batchFootprintRoute(
+    queryFootprint: (AggregatesQuery) -> List<FootprintResponse>
+) {
+    post("/api/footprint/batch") {
+        call.handle {
+            val rawBody = try {
+                call.receiveText()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn(e) { "Failed to read batch footprint request body" }
+                throw RequestException("invalid request body")
+            }
+
+            val request = try {
+                decodeBatchFootprintRequest(rawBody)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn(e) {
+                    "Invalid batch footprint request (bodyLength=${rawBody.toByteArray().size} bytes)"
+                }
+                throw RequestException("invalid request body")
+            }
+
+            val exchange = requireParam(request.exchange, "exchange")
+            val symbol = requireSymbol(requireParam(request.symbol, "symbol"))
+            if (request.queries.isEmpty()) {
+                throw RequestException("queries must not be empty")
+            }
+
+            var totalLimit = 0
+            val results = request.queries.map { query ->
+                val timeframe = query.timeframe.trim().lowercase()
+                if (!Timeframes.isAllowed(timeframe)) {
+                    throw RequestException(
+                        "unsupported timeframe '$timeframe'; supported: " +
+                            Timeframes.ordered.joinToString()
+                    )
+                }
+                if (query.limit <= 0) {
+                    throw RequestException("limit must be positive")
+                }
+                val limit = query.limit.coerceAtMost(MAX_LIMIT)
+                totalLimit += limit
+                if (totalLimit > MAX_LIMIT) {
+                    throw RequestException("total batch limit exceeds $MAX_LIMIT")
+                }
+                if (query.start != null && query.end != null && query.start > query.end) {
+                    throw RequestException("start must be <= end")
+                }
+
+                BatchFootprintResult(
+                    timeframe = timeframe,
+                    candles = queryFootprint(
+                        AggregatesQuery(
+                            exchange = exchange,
+                            symbol = symbol,
+                            timeframe = timeframe,
+                            from = query.start,
+                            to = query.end,
+                            limit = limit,
+                            order = resolveOrder(query.order, "desc")
+                        )
+                    )
+                )
+            }
+
+            call.respondJson(
+                BatchFootprintResponse(
+                    exchange = exchange,
+                    symbol = symbol,
+                    results = results
+                )
+            )
+        }
     }
 }
 
