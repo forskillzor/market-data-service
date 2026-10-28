@@ -12,15 +12,18 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import mu.KotlinLogging
+import java.io.ByteArrayOutputStream
+import java.util.zip.GZIPOutputStream
 
 private val log = KotlinLogging.logger {}
 private val json = Json {
-    prettyPrint = true
+    prettyPrint = false
     encodeDefaults = true
     ignoreUnknownKeys = true
     isLenient = true
 }
 private const val MAX_LIMIT = 10_000
+private const val GZIP_MIN_SIZE = 1024
 private val SYMBOL_REGEX = Regex("^[A-Za-z0-9_]+$")
 
 @Serializable
@@ -504,6 +507,32 @@ private suspend fun ApplicationCall.respondError(status: HttpStatusCode, message
     )
 }
 
+private fun ApplicationCall.acceptsGzip(): Boolean {
+    val header = request.headers[HttpHeaders.AcceptEncoding] ?: return false
+    return header.split(',').any { raw ->
+        val token = raw.trim()
+        if (!token.startsWith("gzip", ignoreCase = true)) {
+            false
+        } else {
+            token.split(';').drop(1).none { it.trim().startsWith("q=0", ignoreCase = true) }
+        }
+    }
+}
+
+private fun gzip(bytes: ByteArray): ByteArray {
+    val output = ByteArrayOutputStream(bytes.size)
+    GZIPOutputStream(output).use { it.write(bytes) }
+    return output.toByteArray()
+}
+
 private suspend inline fun <reified T> ApplicationCall.respondJson(value: T) {
-    respondText(json.encodeToString(value), ContentType.Application.Json)
+    val text = json.encodeToString(value)
+    val bytes = text.encodeToByteArray()
+    if (bytes.size >= GZIP_MIN_SIZE && acceptsGzip()) {
+        response.headers.append(HttpHeaders.ContentEncoding, "gzip")
+        response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
+        respondBytes(gzip(bytes), ContentType.Application.Json)
+    } else {
+        respondText(text, ContentType.Application.Json)
+    }
 }
