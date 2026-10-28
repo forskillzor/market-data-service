@@ -260,32 +260,72 @@ class AggregateDAO(private val dataSource: HikariDataSource) {
     }
 
     fun queryLiquidationAggregates(
-        exchange: String, symbol: String, timeframe: String = "1m",
-        from: Long? = null, limit: Int = 100
+        exchange: String,
+        symbol: String,
+        timeframe: String = "1m",
+        from: Long? = null,
+        to: Long? = null,
+        limit: Int = 100,
+        order: String = "desc"
     ): List<LiquidationAggregateData> {
+        val normalizedTimeframe = LiquidationTimeframes.normalize(timeframe)
+            ?: throw IllegalArgumentException("unsupported liquidation timeframe '$timeframe'")
+        val duration = LiquidationTimeframes.durationMs(normalizedTimeframe)!!
         val tbl = "liquidation_aggregates_${symbol.lowercase()}"
-        val sql = buildString {
-            append("SELECT * FROM $tbl WHERE 1=1")
-            if (from != null) append(" AND start_time >= ?")
-            append(" ORDER BY start_time DESC LIMIT ?")
+
+        val bucketExpression = if (normalizedTimeframe == "1w") {
+            "((start_time + 259200000) / 604800000) * 604800000 - 259200000"
+        } else {
+            "start_time / $duration * $duration"
         }
+
+        val where = buildString {
+            append("WHERE 1=1")
+            if (from != null) append(" AND start_time >= ?")
+            if (to != null) append(" AND start_time < ?")
+        }
+
+        val aggregated = """
+            SELECT $bucketExpression AS bucket_start,
+                   SUM(long_count) AS long_count,
+                   SUM(long_volume) AS long_volume,
+                   SUM(short_count) AS short_count,
+                   SUM(short_volume) AS short_volume
+            FROM $tbl
+            $where
+            GROUP BY $bucketExpression
+        """.trimIndent()
+
+        val sql = if (order.equals("desc", true)) {
+            "SELECT * FROM ($aggregated ORDER BY bucket_start DESC LIMIT ?) latest"
+        } else {
+            "SELECT * FROM ($aggregated ORDER BY bucket_start DESC LIMIT ?) latest ORDER BY bucket_start ASC"
+        }
+
         return dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { stmt ->
                 var idx = 1
                 if (from != null) stmt.setLong(idx++, from)
+                if (to != null) stmt.setLong(idx++, to)
                 stmt.setInt(idx, limit)
+
                 val rs = stmt.executeQuery()
                 val results = mutableListOf<LiquidationAggregateData>()
                 while (rs.next()) {
-                    results.add(LiquidationAggregateData(
-                        exchange = exchange, symbol = symbol, timeframe = timeframe,
-                        startTime = rs.getLong("start_time"),
-                        endTime = rs.getLong("end_time"),
-                        longCount = rs.getInt("long_count"),
-                        longVolume = rs.getBigDecimal("long_volume")?.toPlainString() ?: "0",
-                        shortCount = rs.getInt("short_count"),
-                        shortVolume = rs.getBigDecimal("short_volume")?.toPlainString() ?: "0"
-                    ))
+                    val startTime = rs.getLong("bucket_start")
+                    results.add(
+                        LiquidationAggregateData(
+                            exchange = exchange,
+                            symbol = symbol,
+                            timeframe = normalizedTimeframe,
+                            startTime = startTime,
+                            endTime = startTime + duration,
+                            longCount = rs.getInt("long_count"),
+                            longVolume = rs.getBigDecimal("long_volume")?.toPlainString() ?: "0",
+                            shortCount = rs.getInt("short_count"),
+                            shortVolume = rs.getBigDecimal("short_volume")?.toPlainString() ?: "0"
+                        )
+                    )
                 }
                 results
             }

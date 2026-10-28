@@ -249,15 +249,27 @@ class ApiServer(
                         val symbol = requireSymbol(
                             requireParam(call.request.queryParameters["symbol"], "symbol")
                         )
-                        val timeframe = call.request.queryParameters["timeframe"] ?: "1m"
+                        val timeframe = LiquidationTimeframes.normalize(
+                            call.request.queryParameters["timeframe"]
+                        ) ?: throw RequestException(
+                            "unsupported liquidation timeframe; supported: " +
+                                LiquidationTimeframes.ordered.joinToString()
+                        )
                         val from = parseLong(call.request.queryParameters["from"], "from")
-                        val limit = resolveLimit(call.request.queryParameters["limit"], 100)
+                        val to = parseLong(call.request.queryParameters["to"], "to")
+                        if (from != null && to != null && from >= to) {
+                            throw RequestException("from must be < to")
+                        }
+                        val limit = resolveLimit(call.request.queryParameters["limit"], 500)
+                        val order = resolveOrder(call.request.queryParameters["order"], "desc")
                         val data = dao.queryLiquidationAggregates(
                             exchange,
                             symbol.uppercase(),
                             timeframe,
                             from,
-                            limit
+                            to,
+                            limit,
+                            order
                         )
                         call.respondJson(data)
                     }
